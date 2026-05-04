@@ -13,16 +13,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 # ==========================================
-# 인텔 Arc GPU 가속기 인식
-# ==========================================
-try:
-    import intel_extension_for_pytorch as ipex
-    has_ipex = True
-except ImportError:
-    has_ipex = False
-
-# ==========================================
-# 모델 및 학습 함수 정의 (멀티프로세싱 보호 영역 밖)
+# 모델 및 학습 함수 정의
 # ==========================================
 def build_model(experiment_type, num_classes, learning_rate, device):
     if experiment_type == "ResNet18_Finetune":
@@ -69,11 +60,17 @@ def train_and_eval(model, optimizer, experiment_name, train_loader, test_loader,
 
         train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]", leave=False)
         for inputs, labels in train_pbar:
-            inputs, labels = inputs.to(device), labels.to(device)
+            # 🔥 핵심 최적화 1: non_blocking=True (데이터 비동기 전송)
+            inputs = inputs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
+
+            # Autocast로 연산 속도를 더욱 높임 (Mixed Precision)
+            with torch.amp.autocast('cuda'):
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
             loss.backward()
             optimizer.step()
 
@@ -91,8 +88,12 @@ def train_and_eval(model, optimizer, experiment_name, train_loader, test_loader,
         test_pbar = tqdm(test_loader, desc=f"Epoch {epoch+1}/{epochs} [Test]", leave=False)
         with torch.no_grad():
             for inputs, labels in test_pbar:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
+                # 🔥 평가 때도 비동기 전송 적용
+                inputs = inputs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+
+                with torch.amp.autocast('cuda'):
+                    outputs = model(inputs)
                 _, preds = torch.max(outputs, 1)
 
                 all_preds.extend(preds.cpu().numpy())
@@ -118,6 +119,9 @@ def train_and_eval(model, optimizer, experiment_name, train_loader, test_loader,
     model.load_state_dict(best_model_wts)
     return model, history, best_acc
 
+# ==========================================
+# Wrapper (Transforms 적용용)
+# ==========================================
 class DatasetWrapper(torch.utils.data.Dataset):
     def __init__(self, subset, transform=None):
         self.subset = subset
@@ -131,28 +135,21 @@ class DatasetWrapper(torch.utils.data.Dataset):
         return len(self.subset)
 
 # ==========================================
-# 메인 실행 블록 (Windows 멀티프로세싱 보호)
+# 메인 실행 블록
 # ==========================================
 if __name__ == '__main__':
-    # 1. 하이퍼파라미터 및 디바이스 설정
     BATCH_SIZE = 64
     EPOCHS = 10
     LEARNING_RATE = 0.001
 
-    # 인텔 Arc GPU 최우선 적용, 없으면 NVIDIA, 둘 다 없으면 CPU
-    if has_ipex and hasattr(torch, 'xpu') and torch.xpu.is_available():
-        DEVICE = torch.device("xpu")
-    elif torch.cuda.is_available():
+    if torch.cuda.is_available():
         DEVICE = torch.device("cuda")
-    else:
-        DEVICE = torch.device("cpu")
+        torch.backends.cudnn.benchmark = True # GPU 가속 활성화
+        print(f"[*] 🚀 최종 학습 디바이스: CUDA ({torch.cuda.get_device_name(0)})")
 
-    print(f"[*] 최종 학습 디바이스: {DEVICE}")
-
-    # 2. 데이터셋 다운로드 및 전처리
     print("\n[*] Kaggle에서 포켓몬 데이터셋을 확인 및 다운로드합니다...")
-    dataset_path = kagglehub.dataset_download("lantian773030/pokemonclassification")
-    data_dir = os.path.join(dataset_path, "PokemonData")
+    dataset_path = kagglehub.dataset_download("vishalsubbiah/pokemon-images-and-types")
+    data_dir = os.path.join(dataset_path, "images")
     if not os.path.exists(data_dir):
         data_dir = dataset_path
 
@@ -170,6 +167,7 @@ if __name__ == '__main__':
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
+    # 🚨 RAM 캐싱 폐기, 원래의 정상적인 Lazy Loading 방식으로 복구
     full_dataset = datasets.ImageFolder(data_dir)
     num_classes = len(full_dataset.classes)
     class_names = full_dataset.classes
@@ -184,12 +182,18 @@ if __name__ == '__main__':
     train_data = DatasetWrapper(train_dataset, transform=train_transforms)
     test_data = DatasetWrapper(test_dataset, transform=test_transforms)
 
-    train_loader = DataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
-    test_loader = DataLoader(test_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    # 🔥 핵심 최적화 2 & 3: 일꾼 4명 유지, 메모리 고정, 일꾼 유지(persistent) 설정
+    train_loader = DataLoader(
+        train_data, batch_size=BATCH_SIZE, shuffle=True,
+        num_workers=4, pin_memory=True, persistent_workers=True
+    )
+    test_loader = DataLoader(
+        test_data, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=4, pin_memory=True, persistent_workers=True
+    )
 
     print(f"[*] Train 데이터 수: {train_size}, Test 데이터 수: {test_size}, 클래스 수: {num_classes}")
 
-    # 3. 실험 실행
     experiment_list = [
         "ResNet18_Finetune",
         "ResNet18_Freeze",
@@ -220,7 +224,6 @@ if __name__ == '__main__':
     print(f"\n🏆 최종 최고 성능 모델: {global_best_model_name} (Acc: {global_best_acc:.4f})")
     print("[*] 최고 성능 모델의 가중치가 'best_model.pth'로 저장되었습니다.")
 
-    # 4. Learning Curve 시각화
     plt.figure(figsize=(14, 6))
 
     plt.subplot(1, 2, 1)

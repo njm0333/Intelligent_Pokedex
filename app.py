@@ -5,17 +5,20 @@ from torchvision import models, transforms
 from PIL import Image
 import json
 import os
+import requests
+from io import BytesIO
 
-st.set_page_config(page_title="Pokemon Classifier", page_icon="🔍")
+# 4K 모니터 활용을 위해 layout="wide" 추가
+st.set_page_config(page_title="Pokemon Classifier", page_icon="🔍", layout="wide")
 
 # ==========================================
 # 1. 초기화 및 리소스 로드
 # ==========================================
 @st.cache_resource
 def load_assets():
-    """클래스 이름과 모델 아키텍처 정보를 로드합니다."""
+    """클래스 이름, 모델 아키텍처 정보, 한국어 번역 사전을 로드합니다."""
     if not os.path.exists('class_names.json') or not os.path.exists('best_model_info.json') or not os.path.exists('best_model.pth'):
-        return None, None, "필수 파일이 없습니다. 1_train.py를 먼저 실행하여 모델을 학습시켜주세요."
+        return None, None, None, "필수 파일이 없습니다. 1_train.py를 먼저 실행하여 모델을 학습시켜주세요."
 
     with open('class_names.json', 'r', encoding='utf-8') as f:
         class_names = json.load(f)
@@ -24,9 +27,15 @@ def load_assets():
         info = json.load(f)
         best_arch = info.get("best_architecture")
 
-    return class_names, best_arch, None
+    # 한국어 번역 사전 로드 (make_dict.py로 만든 파일)
+    ko_dict = {}
+    if os.path.exists('pokemon_ko_dict.json'):
+        with open('pokemon_ko_dict.json', 'r', encoding='utf-8') as f:
+            ko_dict = json.load(f)
 
-class_names, best_arch, error_msg = load_assets()
+    return class_names, best_arch, ko_dict, None
+
+class_names, best_arch, pokemon_ko_dict, error_msg = load_assets()
 
 if error_msg:
     st.error(error_msg)
@@ -51,9 +60,9 @@ def load_pytorch_model(arch_name, num_cls):
         raise ValueError(f"알 수 없는 모델 구조입니다: {arch_name}")
 
     # 가중치 로드
-    model.load_state_dict(torch.load('best_model.pth', map_location=device))
+    model.load_state_dict(torch.load('best_model.pth', map_location=device, weights_only=True))
     model.to(device)
-    model.eval() # 추론 모드 전환 필수 [cite: 1115]
+    model.eval() # 추론 모드 전환 필수
     return model
 
 model = load_pytorch_model(best_arch, num_classes)
@@ -61,7 +70,6 @@ model = load_pytorch_model(best_arch, num_classes)
 # ==========================================
 # 3. 이미지 전처리 정의
 # ==========================================
-# 학습 시 설정했던 Test Transform과 동일한 로직을 적용합니다. [cite: 1110, 1111, 1112, 1113, 1114]
 preprocess = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -70,44 +78,76 @@ preprocess = transforms.Compose([
 ])
 
 # ==========================================
-# 4. Streamlit UI 렌더링
+# 4. Streamlit UI 렌더링 (와이드 & 좌우 분할)
 # ==========================================
 st.title("Pokédex: 포켓몬 분류기 🔍")
 st.markdown(f"**적용된 인공지능 모델:** `{best_arch}` (전이학습 성능 1위 모델)")
-st.write("강의 슬라이드에 명시된 요구사항에 따라, 이미지를 입력하면 **Top-5 예측 결과**를 보여줍니다.")
+st.write("---")
 
-uploaded_file = st.file_uploader("포켓몬 이미지를 업로드하세요 (jpg, png)", type=["jpg", "jpeg", "png"])
+# 화면을 좌/우 5:5 비율로 나눔
+col1, col2 = st.columns(2)
 
+image = None
+
+with col1:
+    st.subheader("📥 이미지 입력")
+    st.info("💡 **가장 편한 방법:** 크롬에서 이미지를 **'우클릭 -> 이미지 복사'**한 뒤, 이 화면 아무 곳에나 **붙여넣기(Ctrl+V)** 해보세요!")
+
+    # 1. 파일 업로드 (드래그 앤 드롭 & 클립보드 지원)
+    uploaded_file = st.file_uploader("이미지 파일 업로드", type=["jpg", "jpeg", "png"])
+
+    st.write("**또는**")
+
+    # 2. 이미지 URL 직접 입력
+    image_url = st.text_input("🌐 웹 이미지 주소(URL) 붙여넣기")
+
+# 입력받은 이미지 처리
 if uploaded_file is not None:
-    # 1) 이미지 화면에 출력
     image = Image.open(uploaded_file).convert('RGB')
-    st.image(image, caption="업로드된 포켓몬 이미지", use_container_width=True)
+elif image_url:
+    try:
+        response = requests.get(image_url)
+        response.raise_for_status()
+        image = Image.open(BytesIO(response.content)).convert('RGB')
+    except Exception as e:
+        col1.error("이미지 주소를 불러올 수 없습니다. 주소가 정확한지 확인해주세요.")
 
-    st.write("🔄 모델 분석 중...")
+# 이미지가 정상적으로 준비되었을 때만 우측 화면(col2)에 결과 표시
+if image is not None:
+    with col2:
+        st.subheader("🔍 분석 결과")
 
-    # 2) 텐서 변환 및 추론 [cite: 1115, 1116, 1117]
-    input_tensor = preprocess(image).unsqueeze(0).to(device)
+        # 이미지 가로폭을 컬럼 크기에 딱 맞춤
+        st.image(image, caption="분석 중인 포켓몬...", use_container_width=True)
 
-    with torch.no_grad():
-        output = model(input_tensor)
-        # 3) 확률값 계산을 위한 Softmax 적용 [cite: 1118]
-        probabilities = torch.nn.functional.softmax(output[0], dim=0)
+        with st.spinner("AI가 도감을 뒤지는 중입니다... 🔄"):
+            # 텐서 변환 및 추론
+            input_tensor = preprocess(image).unsqueeze(0).to(device)
 
-        # 4) 가장 확률이 높은 상위 5개 추출 [cite: 8, 14, 1119]
-        top5_prob, top5_catid = torch.topk(probabilities, 5)
+            with torch.no_grad():
+                output = model(input_tensor)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
+                top5_prob, top5_catid = torch.topk(probabilities, 5)
 
-    # 5) 강의 슬라이드 양식과 동일하게 결과 출력 [cite: 9, 10, 11, 12, 13, 1129, 1130, 1131, 1132, 1133]
-    st.subheader("Top-5 predictions:")
+        st.markdown("### 📊 Top-5 Predictions:")
 
-    # 가독성을 위한 컨테이너 박스 생성
-    with st.container():
-        for i in range(5):
-            idx = top5_catid[i].item()
-            prob = top5_prob[i].item() * 100
-            name = class_names[idx]
+        # 결과 출력
+        with st.container():
+            for i in range(5):
+                idx = top5_catid[i].item()
+                prob = top5_prob[i].item() * 100
+                en_name = class_names[idx]
 
-            # 1위 결과는 눈에 띄게 표시
-            if i == 0:
-                st.success(f"**{i+1}. {name} ({prob:.2f}%)** 🏆")
-            else:
-                st.write(f"{i+1}. {name} ({prob:.2f}%)")
+                # 사전에 등록된 한국어 이름이 있으면 가져옴 (없으면 원래 영어 이름 반환)
+                ko_name = pokemon_ko_dict.get(en_name, pokemon_ko_dict.get(en_name.lower(), en_name))
+
+                # 한국어 이름이 영어 이름과 다르면 (사전에 존재하면) 괄호 포함해서 출력
+                if ko_name != en_name:
+                    display_name = f"{en_name} ({ko_name})"
+                else:
+                    display_name = en_name
+
+                if i == 0:
+                    st.success(f"🥇 **1위: {display_name} ({prob:.2f}%)**")
+                else:
+                    st.write(f"**{i+1}위:** {display_name} ({prob:.2f}%)")
