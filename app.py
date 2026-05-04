@@ -80,8 +80,8 @@ preprocess = transforms.Compose([
 # ==========================================
 # 4. Streamlit UI 렌더링 (와이드 & 좌우 분할)
 # ==========================================
-st.title("Pokédex: 포켓몬 분류기 🔍")
-st.markdown(f"**적용된 인공지능 모델:** `{best_arch}` (전이학습 성능 1위 모델)")
+st.title("Intelligent Pokedex")
+st.markdown(f"**적용된 인공지능 모델:** `{best_arch}` ")
 st.write("---")
 
 # 화면을 좌/우 5:5 비율로 나눔
@@ -90,8 +90,7 @@ col1, col2 = st.columns(2)
 image = None
 
 with col1:
-    st.subheader("📥 이미지 입력")
-    st.info("💡 **가장 편한 방법:** 크롬에서 이미지를 **'우클릭 -> 이미지 복사'**한 뒤, 이 화면 아무 곳에나 **붙여넣기(Ctrl+V)** 해보세요!")
+    st.subheader(" 이미지 입력")
 
     # 1. 파일 업로드 (드래그 앤 드롭 & 클립보드 지원)
     uploaded_file = st.file_uploader("이미지 파일 업로드", type=["jpg", "jpeg", "png"])
@@ -99,7 +98,7 @@ with col1:
     st.write("**또는**")
 
     # 2. 이미지 URL 직접 입력
-    image_url = st.text_input("🌐 웹 이미지 주소(URL) 붙여넣기")
+    image_url = st.text_input("웹 이미지 주소(URL) 붙여넣기")
 
 # 입력받은 이미지 처리
 if uploaded_file is not None:

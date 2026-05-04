@@ -138,7 +138,7 @@ class DatasetWrapper(torch.utils.data.Dataset):
 # 메인 실행 블록
 # ==========================================
 if __name__ == '__main__':
-    BATCH_SIZE = 64
+    BATCH_SIZE = 128
     EPOCHS = 10
     LEARNING_RATE = 0.001
 
@@ -146,10 +146,13 @@ if __name__ == '__main__':
         DEVICE = torch.device("cuda")
         torch.backends.cudnn.benchmark = True # GPU 가속 활성화
         print(f"[*] 🚀 최종 학습 디바이스: CUDA ({torch.cuda.get_device_name(0)})")
+    else:
+        DEVICE = torch.device("cpu")
+        print("[*] ⚠️ 경고: CUDA를 찾을 수 없어 CPU로 동작합니다.")
 
     print("\n[*] Kaggle에서 포켓몬 데이터셋을 확인 및 다운로드합니다...")
-    dataset_path = kagglehub.dataset_download("vishalsubbiah/pokemon-images-and-types")
-    data_dir = os.path.join(dataset_path, "images")
+    dataset_path = kagglehub.dataset_download("lantian773030/pokemonclassification")
+    data_dir = os.path.join(dataset_path, "PokemonData")
     if not os.path.exists(data_dir):
         data_dir = dataset_path
 
